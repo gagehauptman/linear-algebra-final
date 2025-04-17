@@ -110,11 +110,12 @@ impl CipherParams {
 }
 
 fn main() {
-    let params = CipherParams { n: 8, q: 2_i64.pow(16) };
+    let msg_bytes = "wow look encryption :3".as_bytes();
+
+    let params = CipherParams { n: msg_bytes.len(), q: 2_i64.pow(16) };
     let mut rng = rand::rng();
 
     let (public_key, secret_key) = params.keygen(&mut rng);
-    let msg_bytes = "Haii OwO".as_bytes();
     let m: Polynomial = DVector::from_iterator(params.n, msg_bytes.iter().map(|&b| b as i64));
     println!("Original Bytes:\n{:?}", m);
 
