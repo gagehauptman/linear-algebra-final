@@ -110,9 +110,10 @@ impl CipherParams {
 }
 
 fn main() {
+    let start = std::time::Instant::now();
     let msg_bytes = "wow look, encryption".as_bytes();
 
-    let params = CipherParams { n: msg_bytes.len(), q: 2_i64.pow(16) };
+    let params = CipherParams { n: msg_bytes.len(), q: 12289 };
     let mut rng = rand::rng();
 
     let (public_key, secret_key) = params.keygen(&mut rng);
@@ -126,4 +127,6 @@ fn main() {
     let decrypted_bytes: Vec<u8> = decrypted.iter().cloned().collect();
     println!("Decrypted Bytes:\n{:?}", decrypted_bytes);
     println!("Decrypted String:\n{}", String::from_utf8_lossy(&decrypted_bytes));
+
+    println!("Runtime for full encryption/decryption: {}μs", start.elapsed().as_micros());
 }
