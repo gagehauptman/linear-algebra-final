@@ -102,28 +102,28 @@ impl CipherParams {
     // Decrypt function
     fn decrypt(&self, secret_key: &SecretKey, cipher_data: &CipherData) -> DVector<u8> {
         let scale = self.q / T;
-        let thing1 = self.polynomial_multiply(&cipher_data.u, &secret_key.s);
-        let thing2 = self.modulo_q(&cipher_data.v - thing1);
-        thing2.map(|x| ((x + scale/2) / scale) as u8)
+        let u_times_s = self.polynomial_multiply(&cipher_data.u, &secret_key.s);
+        let v_minus_u_s = self.modulo_q(&cipher_data.v - u_times_s);
+        // map back to message coefficients
+        v_minus_u_s.map(|coeff| ((coeff + scale/2) / scale) as u8)
     }
-
 }
 
 fn main() {
-    let msg_bytes = "wow look encryption :3".as_bytes();
+    let msg_bytes = "wow look, encryption".as_bytes();
 
     let params = CipherParams { n: msg_bytes.len(), q: 2_i64.pow(16) };
     let mut rng = rand::rng();
 
     let (public_key, secret_key) = params.keygen(&mut rng);
     let m: Polynomial = DVector::from_iterator(params.n, msg_bytes.iter().map(|&b| b as i64));
-    println!("Original Bytes:\n{:?}", m);
+    println!("Original Bytes:\n{:?}", m.iter().cloned().collect::<Vec<i64>>());
 
     let cipher = params.encrypt(&public_key, &m, &mut rng);
-    println!("Cipher Bytes:\n{:?}\n{:?}", cipher.u, cipher.v);
+    println!("Cipher Data:\nu: {:?}\nv: {:?}", cipher.u.iter().cloned().collect::<Vec<i64>>(), cipher.v.iter().cloned().collect::<Vec<i64>>());
 
     let decrypted = params.decrypt(&secret_key, &cipher);
     let decrypted_bytes: Vec<u8> = decrypted.iter().cloned().collect();
-    println!("Decrypted bytes:\n{:?}", decrypted_bytes);
-    println!("Decrypted string:\n{}", String::from_utf8_lossy(&decrypted_bytes));
+    println!("Decrypted Bytes:\n{:?}", decrypted_bytes);
+    println!("Decrypted String:\n{}", String::from_utf8_lossy(&decrypted_bytes));
 }
