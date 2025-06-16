@@ -2,7 +2,7 @@ use nalgebra::{DMatrix, DVector};
 use rand::distr::Uniform;
 use rand::prelude::*;
 
-type Polynomial = DVector<i64>;
+type Polynomial = DVector<i32>;
 
 struct SecretKey {
     s: Polynomial
@@ -20,14 +20,14 @@ struct CipherData {
 
 struct CipherParams {
     n: usize,
-    q: i64,
-    T: i64,
+    q: i32,
+    T: i32,
 }
 
 impl CipherParams {
     // Constructs a circulant matrix from polynomial a using CipherParams n
-    fn build_circulant_matrix(&self, a: &Polynomial) -> DMatrix<i64> {
-        let mut m = DMatrix::<i64>::zeros(self.n, self.n);
+    fn build_circulant_matrix(&self, a: &Polynomial) -> DMatrix<i32> {
+        let mut m = DMatrix::<i32>::zeros(self.n, self.n);
         for i in 0..self.n {
             for j in 0..self.n {
                 let index = (i + self.n - j) % self.n;
@@ -59,8 +59,29 @@ impl CipherParams {
         self.modulo_q(product)
     }
 
+    // Multiply two polynomials using NTT
+    fn polynomial_ntt(&self, a: &Polynomial, b: &Polynomial) -> Polynomial {
+        // 1. Convert to i64 vectors
+        let a_i64: Vec<i64> = a.iter().map(|&x| x as i64).collect();
+        let b_i64: Vec<i64> = b.iter().map(|&x| x as i64).collect();
+
+        // 2. Compute the primitive n-th root of unity mod p
+        let n = self.n;
+        let p = self.q as i64;
+        let root = ntt::omega(p, n);  // :contentReference[oaicite:0]{index=0}
+
+        // 3. Do the NTT multiplication all in one function
+        let prod_i64 = ntt::polymul_ntt(&a_i64, &b_i64, n, p, root);  // :contentReference[oaicite:1]{index=1}
+
+        // 4. Back to DVector<i32> and reduce mod q
+        let prod_i32 = DVector::from_vec(
+            prod_i64.into_iter().map(|x| x as i32).collect()
+        );
+        self.modulo_q(prod_i32)
+    }
+
     // Create a polynomial with coefficients uniformly from -bound to bound
-    fn uniform_polynomial(&self, rng: &mut ThreadRng, bound: i64) -> Polynomial {
+    fn uniform_polynomial(&self, rng: &mut ThreadRng, bound: i32) -> Polynomial {
         let uniform = Uniform::new(-bound, bound+1).unwrap();
         DVector::from_fn(self.n, |_,_| uniform.sample(rng))
     }
@@ -83,25 +104,40 @@ impl CipherParams {
     }
 
     // Encrypt function
-    fn encrypt(&self, public_key: &PublicKey, m: &Polynomial, rng: &mut ThreadRng) -> CipherData {
+    fn encrypt(&self, public_key: &PublicKey, m: &Polynomial, rng: &mut ThreadRng, ntt: bool) -> CipherData {
         let r = self.uniform_polynomial(rng, 1);
         let e1 = self.uniform_polynomial(rng, 1);
         let e2 = self.uniform_polynomial(rng, 1);
 
-        // u = a*r + e1
-        let u_poly = self.polynomial_multiply(&public_key.a, &r);
+
+        let u_poly = if ntt {
+            self.polynomial_ntt(&public_key.a, &r)
+        } else {
+            self.polynomial_multiply(&public_key.a, &r)
+        };
         let u = self.modulo_q(u_poly + e1);
+
         // v = b * r + e2 + (q/2) * m
-        let product = self.polynomial_multiply(&public_key.b, &r);
+
+        let product = if ntt {
+            self.polynomial_ntt(&public_key.b, &r)
+        } else {
+            self.polynomial_multiply(&public_key.b, &r)
+        };
         let v = self.modulo_q(product + e2 + m * (self.q / self.T));
 
         CipherData { u, v }
     }
 
     // Decrypt function
-    fn decrypt(&self, secret_key: &SecretKey, cipher_data: &CipherData) -> DVector<i64> {
+    fn decrypt(&self, secret_key: &SecretKey, cipher_data: &CipherData, ntt: bool) -> DVector<i32> {
         let scale = self.q / self.T;
-        let u_times_s = self.polynomial_multiply(&cipher_data.u, &secret_key.s);
+
+        let u_times_s = if ntt {
+            self.polynomial_ntt(&cipher_data.u, &secret_key.s)
+        } else {
+            self.polynomial_multiply(&cipher_data.u, &secret_key.s)
+        };
         let v_minus_u_s = self.modulo_q(&cipher_data.v - u_times_s);
         // map back to message coefficients
         v_minus_u_s.map(|coeff| (coeff + scale/2) / scale)
@@ -111,7 +147,7 @@ impl CipherParams {
 fn string_to_bits_polynomial(params: &CipherParams, msg: &str) -> Polynomial {
     let bits = msg.as_bytes()
         .iter()
-        .flat_map(|&b| (0..8).rev().map(move |i| ((b>>i)&1) as i64))
+        .flat_map(|&b| (0..8).rev().map(move |i| ((b>>i)&1) as i32))
         .chain(std::iter::repeat(0))
         .take(params.n);
     let poly = DVector::from_iterator(params.n, bits);
@@ -119,7 +155,7 @@ fn string_to_bits_polynomial(params: &CipherParams, msg: &str) -> Polynomial {
 }
 
 fn bits_polynomial_to_string(params: &CipherParams, poly: &Polynomial) -> String {
-    let bits: Vec<i64> = poly.iter()
+    let bits: Vec<i32> = poly.iter()
         .cloned()
         .take(params.n)
         .collect();
@@ -142,20 +178,30 @@ fn bits_polynomial_to_string(params: &CipherParams, poly: &Polynomial) -> String
     String::from_utf8(bytes).expect("Decrypted bits were not valid UTF-8")
 }
 
+// DATA
+
+fn test_data_size(params: &CipherParams, iters: usize, ntt: bool) -> u128 {
+    let mut rng = rand::thread_rng();
+    let (public_key, secret_key) = params.keygen(&mut rng);
+    let start = std::time::Instant::now();
+
+    let msg = "wow look, encryption"; // Must be less than 128 characters long
+    for i in 0..iters {
+        let m: Polynomial = string_to_bits_polynomial(&params, msg);
+        let cipher = params.encrypt(&public_key, &m, &mut rng, ntt);
+        let decrypted = params.decrypt(&secret_key, &cipher, ntt);
+    }
+
+    let duration = start.elapsed();
+
+    duration.as_millis()
+}
 
 fn main() {
-    let start = std::time::Instant::now();
-    let msg = "wow look, encryption"; // Must be less than 128 characters long
-    let n = 1024;
-
-    println!("Original String: {:?}", msg);
-
-    let params = CipherParams { n, q: 12289, T: 2 };
     let mut rng = rand::thread_rng();
-
+    let params = CipherParams { n: 1024, q: 12289, T: 2 };
     let (public_key, secret_key) = params.keygen(&mut rng);
-    let m: Polynomial = string_to_bits_polynomial(&params, msg);
-    let cipher = params.encrypt(&public_key, &m, &mut rng);
-    let decrypted = params.decrypt(&secret_key, &cipher);
-    println!("Decrypted String: {:?}", bits_polynomial_to_string(&params, &decrypted));
+    for i in 0..20 {
+        println!("{:?} KB: {:?} ms", i as f32 * 128.0/1024.0, test_data_size(&params, i, true));
+    }
 }
