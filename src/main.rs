@@ -2,8 +2,6 @@ use nalgebra::{DMatrix, DVector};
 use rand::distr::Uniform;
 use rand::prelude::*;
 
-const T: i64 = 256;
-
 type Polynomial = DVector<i64>;
 
 struct SecretKey {
@@ -23,6 +21,7 @@ struct CipherData {
 struct CipherParams {
     n: usize,
     q: i64,
+    T: i64,
 }
 
 impl CipherParams {
@@ -94,39 +93,69 @@ impl CipherParams {
         let u = self.modulo_q(u_poly + e1);
         // v = b * r + e2 + (q/2) * m
         let product = self.polynomial_multiply(&public_key.b, &r);
-        let v = self.modulo_q(product + e2 + m * (self.q / T));
+        let v = self.modulo_q(product + e2 + m * (self.q / self.T));
 
         CipherData { u, v }
     }
 
     // Decrypt function
-    fn decrypt(&self, secret_key: &SecretKey, cipher_data: &CipherData) -> DVector<u8> {
-        let scale = self.q / T;
+    fn decrypt(&self, secret_key: &SecretKey, cipher_data: &CipherData) -> DVector<i64> {
+        let scale = self.q / self.T;
         let u_times_s = self.polynomial_multiply(&cipher_data.u, &secret_key.s);
         let v_minus_u_s = self.modulo_q(&cipher_data.v - u_times_s);
         // map back to message coefficients
-        v_minus_u_s.map(|coeff| ((coeff + scale/2) / scale) as u8)
+        v_minus_u_s.map(|coeff| (coeff + scale/2) / scale)
     }
 }
 
+fn string_to_bits_polynomial(params: &CipherParams, msg: &str) -> Polynomial {
+    let bits = msg.as_bytes()
+        .iter()
+        .flat_map(|&b| (0..8).rev().map(move |i| ((b>>i)&1) as i64))
+        .chain(std::iter::repeat(0))
+        .take(params.n);
+    let poly = DVector::from_iterator(params.n, bits);
+    poly
+}
+
+fn bits_polynomial_to_string(params: &CipherParams, poly: &Polynomial) -> String {
+    let bits: Vec<i64> = poly.iter()
+        .cloned()
+        .take(params.n)
+        .collect();
+
+    let mut bytes = Vec::new();
+    for chunk in bits.chunks(8) {
+        if chunk.len() < 8 { break; }
+
+        let mut byte = 0u8;
+        for (i, &bit) in chunk.iter().enumerate() {
+            byte |= ((bit as u8) & 1) << (7 - i);
+        }
+        bytes.push(byte);
+    }
+
+    while let Some(&0) = bytes.last() {
+        bytes.pop();
+    }
+
+    String::from_utf8(bytes).expect("Decrypted bits were not valid UTF-8")
+}
+
+
 fn main() {
     let start = std::time::Instant::now();
-    let msg_bytes = "wow look, encryption".as_bytes();
+    let msg = "wow look, encryption"; // Must be less than 128 characters long
+    let n = 1024;
 
-    let params = CipherParams { n: msg_bytes.len(), q: 12289 };
-    let mut rng = rand::rng();
+    println!("Original String: {:?}", msg);
+
+    let params = CipherParams { n, q: 12289, T: 2 };
+    let mut rng = rand::thread_rng();
 
     let (public_key, secret_key) = params.keygen(&mut rng);
-    let m: Polynomial = DVector::from_iterator(params.n, msg_bytes.iter().map(|&b| b as i64));
-    println!("Original Bytes:\n{:?}", m.iter().cloned().collect::<Vec<i64>>());
-
+    let m: Polynomial = string_to_bits_polynomial(&params, msg);
     let cipher = params.encrypt(&public_key, &m, &mut rng);
-    println!("Cipher Data:\nu: {:?}\nv: {:?}", cipher.u.iter().cloned().collect::<Vec<i64>>(), cipher.v.iter().cloned().collect::<Vec<i64>>());
-
     let decrypted = params.decrypt(&secret_key, &cipher);
-    let decrypted_bytes: Vec<u8> = decrypted.iter().cloned().collect();
-    println!("Decrypted Bytes:\n{:?}", decrypted_bytes);
-    println!("Decrypted String:\n{}", String::from_utf8_lossy(&decrypted_bytes));
-
-    println!("Runtime for full encryption/decryption: {}μs", start.elapsed().as_micros());
+    println!("Decrypted String: {:?}", bits_polynomial_to_string(&params, &decrypted));
 }
